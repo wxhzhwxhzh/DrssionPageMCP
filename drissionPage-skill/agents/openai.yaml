@@ -1,0 +1,7 @@
+interface:
+  display_name: "DrissionPage MCP 路由技能"
+  short_description: "统一使用 mcp_router 工具执行网页自动化流程"
+  default_prompt: "使用 $drission-page-skill 处理当前网页自动化任务，并严格只调用 mcp__mcp_router__* 前缀工具。"
+
+policy:
+  allow_implicit_invocation: true

@@ -11,3 +11,8 @@ test.py
 # Virtual environments
 .venv
 .vscode
+
+# Local debug/test artifacts
+goofish_*.png
+docs/*.db
+dp_artifacts/

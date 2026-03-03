@@ -5,7 +5,7 @@ import sqlite3
 import json
 import os
 
-def save_dict_to_sqlite(data, db_path='data.db', table_name='my_table'):
+def save_dict_to_sqlite(data, db_path='data.db', table_name='my_table', mode: str = "append"):
     """
     将字典或JSON字符串保存到SQLite数据库中。
     
@@ -13,6 +13,7 @@ def save_dict_to_sqlite(data, db_path='data.db', table_name='my_table'):
         data (dict or list of dict or str): 字典、列表字典，或JSON字符串。
         db_path (str): SQLite 数据库文件路径。
         table_name (str): 要创建的表名。
+        mode (str): 写入模式：\"append\"(默认，不破坏已有表) / \"overwrite\"(显式覆盖，DROP+重建)。
     """
     # 如果是 JSON 字符串，则解析为 Python 对象
     if isinstance(data, str):
@@ -35,9 +36,21 @@ def save_dict_to_sqlite(data, db_path='data.db', table_name='my_table'):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # 创建表（如果不存在）
-    cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
-    cursor.execute(f'CREATE TABLE "{table_name}" ({col_defs})')
+    # 创建表（如果不存在）；默认不允许破坏性 DROP，除非显式 mode=overwrite。
+    if mode not in ("append", "overwrite"):
+        raise ValueError("mode 必须为 'append' 或 'overwrite'。")
+
+    if mode == "overwrite":
+        cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+        cursor.execute(f'CREATE TABLE "{table_name}" ({col_defs})')
+    else:
+        cursor.execute(f'CREATE TABLE IF NOT EXISTS "{table_name}" ({col_defs})')
+        # 尽量补齐缺失列（SQLite 支持 ADD COLUMN）。
+        cursor.execute(f'PRAGMA table_info(\"{table_name}\")')
+        existing_cols = {row[1] for row in cursor.fetchall()}  # row[1] = name
+        for col in columns:
+            if col not in existing_cols:
+                cursor.execute(f'ALTER TABLE \"{table_name}\" ADD COLUMN \"{col}\" TEXT')
 
     # 插入数据
     placeholders = ', '.join(['?' for _ in columns])
@@ -50,4 +63,4 @@ def save_dict_to_sqlite(data, db_path='data.db', table_name='my_table'):
     conn.commit()
     conn.close()
 
-    return (f"数据已保存到 {db_path} 的表 {table_name} 中。")
+    return (f"数据已保存到 {db_path} 的表 {table_name} 中（mode={mode}）。")

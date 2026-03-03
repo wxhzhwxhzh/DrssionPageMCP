@@ -3,6 +3,7 @@
 
 from typing import Any,Literal
 import re
+from collections import deque
 from pathlib import Path
 from DrissionPage import Chromium,ChromiumOptions
 from mcp.server.fastmcp import FastMCP,Image,Context
@@ -13,8 +14,8 @@ from DrissionPage.common import Keys
 
 提示='''
 DrissionPage MCP  是一个基于 DrissionPage 和 FastMCP 的浏览器自动化MCP server服务器，它提供了一系列强大的浏览器操作 API，让您能够轻松通过AI实现网页自动化操作。
-点击元素前，需要先获取页面所有可点击元素的信息，使用get_all_clickable_elements()方法。
-输入元素前，需要先获取页面所有可输入元素的信息，使用get_all_input_elements()方法。
+点击元素前，建议先获取页面 DOM 信息，使用 getSimplifiedDomTree() 方法。
+输入元素前，建议先获取可输入元素信息，使用 getInputElementsInfo() 方法。
 
 '''
 
@@ -23,52 +24,90 @@ DrissionPage MCP  是一个基于 DrissionPage 和 FastMCP 的浏览器自动化
 #region DrissionPageMCP
 class DrissionPageMCP():
     def __init__(self):
+        # Listener buffers must be bounded; otherwise long-running sessions can OOM.
+        self._listener_maxlen = 500
         self.browser = None
         self.session = None
         self.current_tab = None
         self.current_frame = None
         self.current_shadow_root = None
-        self.cdp_event_data = []
-        self.response_listener_data=[]
+        self.cdp_event_data = deque(maxlen=self._listener_maxlen)
+        self.cdp_event_dropped = 0
+        self.response_listener_data = deque(maxlen=self._listener_maxlen)
+        self.response_listener_dropped = 0
+        self._last_connect_config: dict[str, Any] = {}
 
     def test(self):
         return "test"
+    def get_DrissionPage_code_guide(self)-> str:
+        """ 获取 DrissionPage 代码指南"""
+        with open(Path(__file__).parent / "DrissionPage_code_guide.md", "r", encoding="utf-8") as f:
+            return f.read()
+        # return "1.0.3"
     def get_version(self)-> str:
         """ 获取版本号"""
-        return "1.0.3"
-    async def connect_or_open_browser(self, config: dict={'debug_port':9222}) -> dict:
+        return "1.0.4"
+    async def connect_or_open_browser(self, config: dict | None = None) -> dict:
         """
         用DrissionPage 打开或接管已打开的浏览器，参数通过字典传递。
         必要参数:
-            config (dict): 可选键包括 、debug_port、browser_path、headless
+            config (dict): 可选键包括 debug_port、address、browser_path、headless
         返回:
             dict: 浏览器信息
         """
+        config = config or {}
+        debug_port = config.get("debug_port", 9222)
+        address = config.get("address")
+
         co = ChromiumOptions()
-        if config.get("debug_port"):
-            co.set_local_port(config["debug_port"])
+        if address:
+            co.set_address(address)
+        elif debug_port:
+            co.set_local_port(debug_port)
         if config.get("browser_path"):
             co.set_browser_path(config["browser_path"])
         if config.get("headless", False):
             co.headless(True)
 
         self.browser = Chromium(co)
+        self._last_connect_config = dict(config)
         tab = self.browser.latest_tab        
+
+        if address:
+            connect_line = f"co.set_address('{address}')"
+        else:
+            connect_line = f"co.set_local_port({debug_port})"
 
         return {
             "browser_address": self.browser._chromium_options.address,
             "latest_tab_title": tab.title,
             "latest_tab_id": tab.tab_id,
+            "active_connection": dict(self._last_connect_config),
+            "等价Python代码":f'''
+from DrissionPage import Chromium, ChromiumOptions
+form DrissionPage.common import Keys
+# 创建配置对象
+co = ChromiumOptions()
+{connect_line}
+# 创建浏览器对象，浏览器对象不能打开网址，只有标签页对象才能打开网址
+browser = Chromium(co)
+# 获取最新标签页
+tab = browser.latest_tab
+'''
         }
+    
     async def new_tab(self, url: str) -> str:
         """用DrissionPage 控制的浏览器,打开新标签页并 打开一个网址"""    
         tab = self.browser.new_tab(url)    
-        return {"title": tab.title, "tab_id": tab.tab_id, "url": tab.url,"dom":self.getSimplifiedDomTree()}
+        return {"title": tab.title, "tab_id": tab.tab_id, "url": tab.url,"dom":self.getSimplifiedDomTree(),
+               "等价Python代码":f'''
+tab = browser.new_tab('{url}')
+''' }
     
     def wait(self, a:int) :
         """等待a秒"""
         self.browser.latest_tab.wait(a)
-        return f"等待{a}秒成功"
+        return {"rsult":f"等待{a}秒成功", "等价Python代码":f"tab.wait({a})"}
     
     async def get(self,url:str)->str:
         """在当前标签页打开一个网址"""
@@ -77,7 +116,8 @@ class DrissionPageMCP():
             # return "请先打开或者连接浏览器"
         self.lastest_tab.get(url)
         tab=self.browser.latest_tab
-        return {"title": tab.title, "tab_id": tab.tab_id, "url": tab.url,"dom":self.getSimplifiedDomTree()}
+        return {"title": tab.title, "tab_id": tab.tab_id, "url": tab.url,"dom":self.getSimplifiedDomTree(),"等价Python代码":f'''tab.get('{url}')'''}
+
         
     
     #region 上传和下载
@@ -96,24 +136,25 @@ class DrissionPageMCP():
         result = tab.download(file_url=url, save_path=path, rename=rename)
         return str(result)
     
-    def upload_file(self,  file_path: str) -> str:
-        """点击当网页上的 <input type="file"> 元素触发上传文件的操作，上传file_path文件到当前网页
+    def upload_file(self,  file_path: str, xpath: str = "//input[@type='file']") -> dict:
+        """点击当网页上的 <input type="file"> 元素触发上传文件的操作，上传 file_path 文件到当前网页
         
-        Args:            
+        Args:
             file_path (str): 要上传的文件路径
+            xpath (str): 触发上传的元素 xpath（默认 //input[@type='file']）
         
         Returns:
             str: 上传结果信息，如果元素不存在则返回错误信息
         """
-        x="//input[@type='file']"
+        x = xpath
         t:ChromiumTab=self.lastest_tab
         if e:= t(f"xpath:{x}"):
             t.set.upload_files(file_path)
             e.click(by_js=True)
             t.wait.upload_paths_inputted()
-            return f"{file_path} 上传成功 {e}"
+            return {"uploaded": True, "file_path": file_path, "xpath": xpath}
         else:
-            return f"元素{x}不存在，无法触发上传文件"
+            raise LookupError(f"元素{x}不存在，无法触发上传文件")
 
         
 
@@ -126,10 +167,10 @@ class DrissionPageMCP():
         """向当前页面发送 enter 回车键"""
         tab = self.browser.latest_tab
         try:
-            result = tab.actions.type(Keys.ENTER)
-            return f"{tab.title} 网页发送 enter 回车键成功"
+            tab.actions.type(Keys.ENTER)
+            return {"result":f'{tab.title} 网页发送 enter 回车键成功', "等价Python代码":f"tab.actions.type(Keys.ENTER)"}
         except Exception as e:
-            return f"{tab.title} 网页发送 enter 回车键失败"
+            raise RuntimeError(f"{tab.title} 网页发送 enter 回车键失败") from e
         
     def getInputElementsInfo(self) -> list:
         """获取当前标签页的所有可进行输入操作的元素，对元素进行输入操作前优先使用这个方法"""
@@ -146,7 +187,9 @@ class DrissionPageMCP():
         
         locator = f"xpath:{xpath}"
         element = self.browser.latest_tab.ele(locator, timeout=3)
-        result = {"locator": locator, "element": str(element), "click_result": element.click()}
+        if not element:
+            raise LookupError(f"元素{locator}不存在，需要getSimplifiedDomTree先获取元素信息")
+        result = {"locator": locator, "element": str(element), "click_result": element.click(), "等价Python代码":f"tab.ele('{locator}', timeout=3).click()"}
         return result
     
     def click_by_containing_text(self, content: str, index: int = None) :
@@ -166,22 +209,23 @@ class DrissionPageMCP():
 
         # 如果没有匹配到任何元素，返回错误提示
         if len(elements) == 0:
-            return f"元素{content}不存在，需要getInputElementsInfo先获取元素信息"
+            raise LookupError(f"元素{content}不存在，需要getInputElementsInfo先获取元素信息")
         
         # 如果只找到一个元素，直接点击它
         if len(elements) == 1:
-            self.lastest_tab(content).click()
-            return f" 点击成功"
+            elements[0].click()
+            return {"clicked": True, "content": content, "index": 0}
         
         # 如果找到多个元素
         if len(elements) > 1:
             # 如果未指定 index，提示用户提供索引
             if index is None:
-                return f"元素{content}存在多个，请调整 index 参数，index=0表示第一个元素，{elements}"
-            else:
-                # 根据指定索引点击对应的元素
-                elements[index].click()
-                return f" 点击成功"
+                raise ValueError(f"元素{content}存在多个，请调整 index 参数，index=0表示第一个元素")
+            if index < 0 or index >= len(elements):
+                raise IndexError(f"index 越界：{index}，可用范围 0..{len(elements)-1}")
+            # 根据指定索引点击对应的元素
+            elements[index].click()
+            return {"clicked": True, "content": content, "index": index}
   
         
     
@@ -198,30 +242,33 @@ class DrissionPageMCP():
         """
         locator = f"xpath:{xpath}"
         if e := self.browser.latest_tab.ele(locator, timeout=4):
-            result = {"locator": locator, "result": e.input(input_value, clear=clear_first)}
+            result = {"locator": locator, "result": e.input(input_value, clear=clear_first), "等价Python代码":f"tab.ele('{locator}', timeout=4).input({input_value}, clear={clear_first})"}
             return result
         else:
-            return f"元素{locator}不存在，需要getInputElementsInfo先获取元素信息"
+            raise LookupError(f"元素{locator}不存在，需要getInputElementsInfo先获取元素信息")
 
     def get_body_text(self) -> str:
         """获取当前标签页的body的文本内容"""
         
         tab = self.browser.latest_tab
         body_text = tab('t:body').text
-        return body_text
-    def run_js(self, js_code: str) :
+        r={"body_text":body_text,"等价Python代码":f"tab('t:body').text"}
+        return r
+    def run_js(self, js_code: str, as_expr: bool = False):
         """
         在当前标签页中运行JavaScript代码并返回执行结果
         查找网页元素，获取元素信息，操作网页元素优先使用这个方法
         
         Args:
             js_code (str): 要执行的JavaScript代码
+            as_expr (bool): 是否将 js_code 按表达式执行。默认 False（函数体语义）。
         
         Returns:
             Any: JavaScript代码执行结果
         
         Note:
             想要获取执行的js代码的返回值，可以在js_code中使用return语句。
+            或者传入 as_expr=True，把 js_code 当表达式求值（无需写 return）。
             想要获取异步函数的返回值，可以参考下面代码
             return (async (url) => {
                 const response = await fetch(url);
@@ -230,8 +277,9 @@ class DrissionPageMCP():
             })("https://www.baidu.com/");
         """
         tab = self.browser.latest_tab
-        result = tab.run_js(js_code)
+        result = tab.run_js(js_code, as_expr=as_expr)
         return result
+        
     
     def run_cdp( self,cmd, **cmd_args) :
         """在当前标签页中运行谷歌CDP协议代码并获取结果
@@ -257,17 +305,19 @@ class DrissionPageMCP():
         """
         # b=Chromium(debug_port)
         def r(**event):
+            if len(self.cdp_event_data) == self.cdp_event_data.maxlen:
+                self.cdp_event_dropped += 1
             self.cdp_event_data.append({"event_name": event_name, "event_data": event})
 
         try:
             self.browser.latest_tab.driver.set_callback(event_name, r)
-            return f"CDP event callback for '{event_name}' set successfully."
+            return {"listening": True, "event_name": event_name}
         except Exception as e:
-            return e
+            raise RuntimeError(f"CDP event callback for '{event_name}' set failed") from e
 
     def get_cdp_event_data(self) -> list:
         """获取CDP事件回调函数收集到的数据"""
-        return self.cdp_event_data  
+        return list(self.cdp_event_data)
 
 
 
@@ -317,7 +367,7 @@ class DrissionPageMCP():
         url_include: 需要监听的接收的数据包的url包含的关键字
         refresh: 是否刷新页面,
         '''
-        t = self.browser.new_tab(tab_url)      
+        t = self.browser.new_tab("about:blank")
 
         t.run_cdp("Network.enable")
 
@@ -326,6 +376,8 @@ class DrissionPageMCP():
             _mimeType = event.get("response", {}).get("mimeType", "")
             
             if mimeType in _mimeType and url_include in _url:
+                if len(self.response_listener_data) == self.response_listener_data.maxlen:
+                    self.response_listener_dropped += 1
                 self.response_listener_data.append({
                     "event_name": "Network.responseReceived",
                     "event_data": event
@@ -334,22 +386,28 @@ class DrissionPageMCP():
         t.driver.set_callback("Network.responseReceived", r)
         t.get(tab_url)
         
-        return f"开启监听{tab_url}, 数据包url包含关键字：{url_include}，mimeType：{mimeType}"
+        return {
+            "listening": True,
+            "tab_url": tab_url,
+            "mimeType": mimeType,
+            "url_include": url_include,
+        }
     
 
     
-    def response_listener_stop(self,clear_data:bool=False) -> str:
+    def response_listener_stop(self,clear_data:bool=False) -> dict:
         """关闭监听网页发送的数据包"""
         t=self.browser.latest_tab
         t.run_cdp("Network.disable")
         if clear_data:
-            self.response_listener_data = []
-        return f"监听网页发送的数据包关闭成功 ,是否清空数据: {clear_data}"
+            self.response_listener_data.clear()
+            self.response_listener_dropped = 0
+        return {"stopped": True, "cleared": clear_data}
 
     
     def get_response_listener_data(self) -> list:
         """获取监听到的数据,返回数据列表"""
-        return self.response_listener_data
+        return list(self.response_listener_data)
 
     def get_current_tab_screenshot(self) -> bytes:
         """
@@ -383,10 +441,12 @@ class DrissionPageMCP():
             "url": tab.url,
             "title": tab.title,          
             "id": tab.tab_id,
+            "browser_address": self.browser._chromium_options.address,
+            "active_connection": dict(self._last_connect_config),
         }
         return info
     
-    def send_key(self, key: Literal["Enter, Backspace, HOME, END, PAGE_UP, PAGE_DOWN, DOWN, UP, LEFT, RIGHT, ESC, Ctrl+C, Ctrl+V, Ctrl+A, Delete"]) -> str:
+    def send_key(self, key: str) -> str:
         """向当前标签页发送特殊按键"""
         tab = self.browser.latest_tab
         k={"Enter": Keys.ENTER,
@@ -400,15 +460,18 @@ class DrissionPageMCP():
            "LEFT": Keys.LEFT,
            "RIGHT": Keys.RIGHT,
            "ESC": Keys.ESCAPE,
+           "Escape": Keys.ESCAPE,
            "Ctrl+C": Keys.CTRL_C,
            "Ctrl+V": Keys.CTRL_V,
            "Ctrl+A": Keys.CTRL_A,
            "Delete": Keys.DELETE,}
+        if key not in k:
+            raise ValueError(f"不支持的按键：{key}")
         try:
-            result = tab.actions.type(k.get(key))
-            return f"{tab.title} 网页发送 {key} 键成功"
+            tab.actions.type(k[key])
+            return {"sent": key, "result": f"{tab.title} 网页发送 {key} 键成功"}
         except Exception as e:
-            return f"{tab.title} 网页发送 {key} 键失败"
+            raise RuntimeError(f"{tab.title} 网页发送 {key} 键失败") from e
     
     def getSimplifiedDomTree(self) -> dict:
         """获取当前标签页的简化版DOM树"""
@@ -429,7 +492,7 @@ class DrissionPageMCP():
             result = {"locator": locator, "element": str(element)}
             return result
         else:
-            return f"元素{locator}不存在，需要getSimplifiedDomTree先获取元素信息"
+            raise LookupError(f"元素{locator}不存在，需要getSimplifiedDomTree先获取元素信息")
     def drag(self,xpath:str, offset_x: int, offset_y: int, duration: int = 1000) -> dict:
     
         """
@@ -454,53 +517,4 @@ class DrissionPageMCP():
             result = {"offset_x": offset_x, "offset_y": offset_y, "duration": duration}
             return result
         else:
-            return f"元素{xpath}不存在，需要getSimplifiedDomTree先获取元素信息"
-
-#region 初始化mcp
-mcp = FastMCP("DrissionPageMCP", log_level="ERROR",instructions=提示)
-b=DrissionPageMCP()
-
-mcp.add_tool(b.get_version)
-mcp.add_tool(b.connect_or_open_browser)
-mcp.add_tool(b.new_tab)
-mcp.add_tool(b.wait)
-mcp.add_tool(b.get)
-mcp.add_tool(b.download_file)
-mcp.add_tool(b.upload_file)
-mcp.add_tool(b.send_enter)
-mcp.add_tool(b.getInputElementsInfo)
-mcp.add_tool(b.click_by_xpath)
-mcp.add_tool(b.click_by_containing_text)
-mcp.add_tool(b.input_by_xapth)
-mcp.add_tool(b.get_body_text)
-mcp.add_tool(b.run_js)
-mcp.add_tool(b.run_cdp)
-mcp.add_tool(b.listen_cdp_event)
-mcp.add_tool(b.get_cdp_event_data)
-mcp.add_tool(b.get_url_with_response_listener)
-mcp.add_tool(b.response_listener_stop)
-mcp.add_tool(b.get_response_listener_data)
-mcp.add_tool(b.get_current_tab_screenshot)
-mcp.add_tool(b.get_current_tab_screenshot_as_file)
-mcp.add_tool(b.get_current_tab_info) 
-mcp.add_tool(b.send_key)
-mcp.add_tool(b.getSimplifiedDomTree) 
-
-mcp.add_tool(b.move_to)
-mcp.add_tool(b.drag)
-
-#region 保存数据到sqlite
-from ToolBox import save_dict_to_sqlite
-mcp.add_tool(save_dict_to_sqlite)
-
-
-
-
-def main():
-    # 启动MCP服务器
-    print("DrissionPage MCP server is running...")
-    mcp.run(transport='stdio')   
-
-
-if __name__ == "__main__":
-    main()
+            raise LookupError(f"元素{xpath}不存在，需要getSimplifiedDomTree先获取元素信息")
