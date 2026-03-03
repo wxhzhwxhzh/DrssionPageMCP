@@ -48,7 +48,7 @@ DrissionPage MCP  是一个基于 DrissionPage 和 FastMCP 的浏览器自动化
 - 把本仓库 `git clone` 到本地，核心启动文件是 `main.py`。
 - 执行 `uv sync` 安装运行依赖。
 - 如需运行测试，执行 `uv sync --extra dev` 安装开发依赖。
-- 首先要进行 [💖 MCP 安装环境准备工作](./MCP安装教程.md)。
+- 首先要进行 [💖 MCP 安装环境准备工作](./docs/guides/MCP安装教程.md)。
 
 ### 安装到Cursor编辑器
 

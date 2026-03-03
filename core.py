@@ -41,7 +41,8 @@ class DrissionPageMCP():
         return "test"
     def get_DrissionPage_code_guide(self)-> str:
         """ 获取 DrissionPage 代码指南"""
-        with open(Path(__file__).parent / "DrissionPage_code_guide.md", "r", encoding="utf-8") as f:
+        guide_path = Path(__file__).parent / "docs" / "guides" / "DrissionPage_code_guide.md"
+        with open(guide_path, "r", encoding="utf-8") as f:
             return f.read()
         # return "1.0.3"
     def get_version(self)-> str:
@@ -475,7 +476,7 @@ tab = browser.new_tab('{url}')
     
     def getSimplifiedDomTree(self) -> dict:
         """获取当前标签页的简化版DOM树"""
-        from CodeBox import domTreeToJson
+        from utils.codebox import domTreeToJson
         tab = self.browser.latest_tab
         dom_tree = tab.run_js(domTreeToJson)
         return dom_tree
