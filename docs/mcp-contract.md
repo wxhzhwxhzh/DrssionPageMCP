@@ -1,219 +1,595 @@
-# DrissionPageMCP Tool Contract (vNext)
+# DrissionPageMCP Tool Contract
 
-本文件定义 DrissionPageMCP 的 MCP tools 对外契约（contract）。你已确认的关键决策：
-- Python: >= 3.10
-- Screenshot: 统一落盘返回 path + mime（禁止 bytes）
-- Tool 名称保持不变，但返回结构升级为统一 envelope（breaking change，需迁移说明）
+这份文档定义当前 `DrissionPageMCP` 的对外 tool contract。
 
-## 1. 总体约定
+它不是历史迁移笔记，也不是脑补中的未来规划，基准只有三个：
 
-### 1.1 响应 Envelope（所有 tools 通用）
+- [server.py](../server.py) 实际注册的 tool
+- 当前代码实现返回的 envelope 结构
+- 现阶段已经落地并验证过的能力边界
+
+## 基本原则
+
+### 统一返回结构
+
+所有 tool 都返回 envelope。
 
 成功：
+
 ```json
 { "ok": true, "data": {} }
 ```
 
 失败：
+
 ```json
-{ "ok": false, "error": { "code": "<string>", "message": "<string>", "detail": {} } }
+{
+  "ok": false,
+  "error": {
+    "code": "NOT_CONNECTED",
+    "message": "browser not connected",
+    "detail": {}
+  }
+}
 ```
 
-- `data`：成功时 payload，类型必须可 JSON 序列化。
-- `error.code`：稳定的机器可读错误码（见 1.3）。
-- `error.message`：面向人类的简短描述。
-- `error.detail`：可选，补充上下文（例如 xpath、url、exception 类型、trace id 等）；必须可 JSON 序列化。
+字段约束：
 
-### 1.2 路径与文件返回规范
+- `data`：成功 payload，必须可 JSON 序列化
+- `error.code`：稳定、机器可读的错误码
+- `error.message`：面向人类的简短说明
+- `error.detail`：补充上下文，必须可 JSON 序列化
 
-所有“生成文件/截图/下载”的工具，统一返回：
+### 文件返回规范
+
+所有截图、下载、落盘类结果统一返回：
+
 ```json
 { "path": "<string>", "mime": "<string>", "size": 123 }
 ```
 
-- `path`：建议返回绝对路径；如果返回相对路径，必须以 MCP Server 工作目录为基准，并在文档中说明。
-- `mime`：例如 `image/png`、`image/jpeg`、`application/octet-stream`。
-- `size`：可选（字节数），但建议提供。
+约束：
 
-### 1.3 统一错误码（建议最小集合）
+- `path`：建议绝对路径
+- `mime`：例如 `image/png`、`image/jpeg`、`application/octet-stream`
+- `size`：可选，但建议提供
 
-- `NOT_CONNECTED`：未连接/未初始化浏览器。
-- `NO_ACTIVE_TAB`：无法获取有效标签页。
-- `TIMEOUT`：等待元素/加载超时。
-- `ELEMENT_NOT_FOUND`：元素不存在（xpath/text 等定位失败）。
-- `INVALID_ARGUMENT`：参数非法（key/mimeType/path 等）。
-- `IO_ERROR`：文件读写/下载失败。
-- `CDP_ERROR`：CDP 命令执行失败。
-- `INTERNAL_ERROR`：未知异常。
+### 统一错误码
 
-### 1.4 Schema 版本策略（不改 tool 名）
+最小错误码集合：
 
-- Tool 名称保持不变。
-- Schema 升级通过返回字段表达：本次统一引入 envelope（`ok/data/error`）。
-- 迁移期可选：在 `data.legacy` 中临时承载旧返回结构（可选项，是否保留由实现任务决定）。
+- `NOT_CONNECTED`
+- `NO_ACTIVE_TAB`
+- `TIMEOUT`
+- `ELEMENT_NOT_FOUND`
+- `INVALID_ARGUMENT`
+- `IO_ERROR`
+- `CDP_ERROR`
+- `INTERNAL_ERROR`
 
-## 2. Tool 清单与参数/返回（以 `server.py` 中 `build_mcp()` 当前注册为准）
+## Tool 清单
 
-说明：下列工具名称保持不变，但返回统一 envelope；旧版直接返回 dict/str/bytes 的行为视为 deprecated。
+以下内容以 [server.py](../server.py) 当前注册结果为准。
 
-### 2.1 Meta / 文档
+### Meta
 
-#### get_version()
+#### `get_version()`
+
 - 输入：无
-- 成功 data：`{ "version": "1.0.4" }`
+- 成功返回：
 
-#### get_DrissionPage_code_guide()
+```json
+{ "ok": true, "data": { "version": "1.0.4" } }
+```
+
+#### `get_DrissionPage_code_guide()`
+
 - 输入：无
-- 成功 data：`{ "markdown": "..." }`
+- 成功返回：
 
-### 2.2 Browser / Tab
+```json
+{ "ok": true, "data": { "markdown": "..." } }
+```
 
-#### connect_or_open_browser(config)
-- 输入：`{ "debug_port"?: 9222, "address"?: "host:port", "browser_path"?: "...", "headless"?: false }`
-- 成功 data：包含 `browser_address`、`latest_tab_title`、`latest_tab_id`、`active_connection` 等。
+### Browser / Tab
 
-#### new_tab(url)
+#### `connect_or_open_browser(config)`
+
+- 输入：
+
+```json
+{
+  "debug_port": 9222,
+  "address": "127.0.0.1:9223",
+  "browser_path": "C:/Program Files/Google/Chrome/Application/chrome.exe",
+  "headless": false
+}
+```
+
+- 成功 `data` 至少包含：
+  - `browser_address`
+  - `latest_tab_title`
+  - `latest_tab_id`
+  - `active_connection`
+
+#### `new_tab(url)`
+
 - 输入：`{ "url": "https://..." }`
-- 成功 data：`{ "title": "...", "tab_id": "...", "url": "...", "dom": <object> }`
+- 成功 `data`：
 
-#### get(url)
+```json
+{
+  "title": "...",
+  "tab_id": "...",
+  "url": "...",
+  "dom": {}
+}
+```
+
+#### `get(url)`
+
 - 输入：`{ "url": "https://..." }`
-- 成功 data：同 `new_tab`
+- 成功 `data`：同 `new_tab(url)`
 
-#### wait(a)
+#### `wait(a)`
+
 - 输入：`{ "a": 3 }`
-- 成功 data：`{ "waited_seconds": 3 }`
+- 成功 `data`：
 
-#### get_current_tab_info()
+```json
+{ "waited_seconds": 3 }
+```
+
+#### `get_current_tab_info()`
+
 - 输入：无
-- 成功 data：`{ "url": "...", "title": "...", "id": "...", "browser_address": "...", "active_connection": {...} }`
+- 成功 `data`：
 
-### 2.3 DOM / 文本
+```json
+{
+  "url": "...",
+  "title": "...",
+  "id": "...",
+  "browser_address": "...",
+  "active_connection": {}
+}
+```
 
-#### getSimplifiedDomTree()
+### DOM / Text
+
+#### `getSimplifiedDomTree()`
+
 - 输入：无
-- 成功 data：`{ "dom": <object> }`
-- 约束：不得返回 JSON 字符串，必须返回已解析 object。
+- 成功 `data`：
 
-#### get_body_text()
+```json
+{ "dom": {} }
+```
+
+约束：
+
+- 必须返回 object
+- 不应返回 JSON 字符串
+
+#### `get_body_text()`
+
 - 输入：无
-- 成功 data：`{ "body_text": "..." }`
+- 成功 `data`：
 
-### 2.4 交互
+```json
+{ "body_text": "..." }
+```
 
-#### click_by_xpath(xpath)
+### Interaction
+
+#### `click_by_xpath(xpath)`
+
 - 输入：`{ "xpath": "//..." }`
-- 成功 data：`{ "locator": "xpath://..." }`
+- 成功 `data`：
 
-#### click_by_containing_text(content, index?)
-- 输入：`{ "content": "登录", "index"?: 0 }`
-- 成功 data：`{ "clicked": true }`
+```json
+{ "locator": "xpath://..." }
+```
 
-#### input_by_xapth(xpath, input_value, clear_first?)
-- 输入：`{ "xpath": "//...", "input_value": "...", "clear_first"?: true }`
-- 成功 data：`{ "locator": "xpath://..." }`
+#### `click_by_containing_text(content, index?)`
 
-#### send_enter()
+- 输入：`{ "content": "登录", "index": 0 }`
+- 成功 `data`：
+
+```json
+{ "clicked": true }
+```
+
+#### `input_by_xapth(xpath, input_value, clear_first?)`
+
+- 输入：
+
+```json
+{
+  "xpath": "//input[@name='q']",
+  "input_value": "hello",
+  "clear_first": true
+}
+```
+
+- 成功 `data`：
+
+```json
+{ "locator": "xpath://..." }
+```
+
+#### `send_enter()`
+
 - 输入：无
-- 成功 data：`{ "sent": "Enter" }`
+- 成功 `data`：
 
-#### send_key(key)
+```json
+{ "sent": "Enter" }
+```
+
+#### `send_key(key)`
+
 - 输入：`{ "key": "Enter" }`
-- 成功 data：`{ "sent": "Enter" }`
-- 备注：实现需修正/兼容当前 Literal 标注错误，contract 以字符串枚举为准。
+- 成功 `data`：
 
-#### move_to(xpath)
+```json
+{ "sent": "Enter" }
+```
+
+#### `move_to(xpath)`
+
 - 输入：`{ "xpath": "//..." }`
-- 成功 data：`{ "locator": "xpath://..." }`
+- 成功 `data`：
 
-#### drag(xpath, offset_x, offset_y, duration?)
-- 输入：`{ "xpath": "//...", "offset_x": 10, "offset_y": 20, "duration"?: 1000 }`
-- 成功 data：`{ "offset_x": 10, "offset_y": 20, "duration": 1000 }`
+```json
+{ "locator": "xpath://..." }
+```
 
-### 2.5 JS / CDP
+#### `drag(xpath, offset_x, offset_y, duration?, human_like?, seed?)`
 
-#### run_js(js_code, as_expr?)
-- 输入：`{ "js_code": "return document.title", "as_expr"?: false }`
-- 成功 data：`{ "result": <json-serializable> }`
-- 约束：若 JS 返回不可序列化对象，必须在实现层做转换（例如 outerHTML/textContent）或返回 `INVALID_ARGUMENT`。
-- 说明：默认按函数体执行（需要显式 `return` 才有结果）。当 `as_expr=true` 时按表达式求值（无需 `return`）。
+- 输入：
 
-#### run_cdp(cmd, cmd_args?)
-- 输入：`{ "cmd": "Page.navigate", "cmd_args"?: { "url": "..." } }`
-- 成功 data：`{ "result": <object> }`
+```json
+{
+  "xpath": "//div[contains(@class,'slider')]",
+  "offset_x": 180,
+  "offset_y": 0,
+  "duration": 900,
+  "human_like": true,
+  "seed": 7
+}
+```
 
-#### listen_cdp_event(event_name)
+- 成功 `data`：
+
+```json
+{
+  "mode": "linear | human_like",
+  "offset_x": 180,
+  "offset_y": 0,
+  "requested_duration": 900,
+  "trajectory": {
+    "human_like": true,
+    "seed": 7,
+    "point_count": 68,
+    "step_count": 52,
+    "actual_duration_ms": 734,
+    "start": { "x": 412.5, "y": 388.0 },
+    "end": { "x": 602.5, "y": 390.0 }
+  }
+}
+```
+
+说明：
+
+- `human_like=false` 时为兼容模式，走传统线性拖拽
+- `human_like=true` 时，返回中应包含 `trajectory` 摘要
+- `seed` 用于复现轨迹，不传则每次轨迹允许略有差异
+
+### JS / CDP
+
+#### `run_js(js_code, as_expr?)`
+
+- 输入：
+
+```json
+{
+  "js_code": "return document.title",
+  "as_expr": false
+}
+```
+
+- 成功 `data`：
+
+```json
+{ "result": "Example Domain" }
+```
+
+说明：
+
+- 默认按函数体执行，需要显式 `return`
+- `as_expr=true` 时按表达式求值，不需要写 `return`
+- 若返回不可 JSON 序列化对象，应转换后返回，或返回 `INVALID_ARGUMENT`
+
+#### `run_cdp(cmd, cmd_args?)`
+
+- 输入：
+
+```json
+{
+  "cmd": "Page.navigate",
+  "cmd_args": { "url": "https://example.com" }
+}
+```
+
+- 成功 `data`：
+
+```json
+{ "result": {} }
+```
+
+#### `listen_cdp_event(event_name)`
+
 - 输入：`{ "event_name": "Network.responseReceived" }`
-- 成功 data：`{ "listening": true }`
+- 成功 `data`：
 
-#### get_cdp_event_data()
+```json
+{
+  "listening": true,
+  "listener_id": "cdp:Network.responseReceived",
+  "event_name": "Network.responseReceived",
+  "buffer": { "maxlen": 500, "dropped": 0 }
+}
+```
+
+#### `get_cdp_event_data()`
+
 - 输入：无
-- 成功 data：`{ "events": [ ... ] }`
+- 成功 `data`：
 
-### 2.6 Network response listener
+```json
+{
+  "listener_id": "cdp:Network.responseReceived",
+  "event_name": "Network.responseReceived",
+  "maxlen": 500,
+  "dropped": 0,
+  "events": []
+}
+```
 
-#### get_url_with_response_listener(tab_url, mimeType, url_include?)
-- 输入：`{ "tab_url": "...", "mimeType": "application/json", "url_include"?: "." }`
-- 成功 data：`{ "listening": true }`
+### Network Response Listener
 
-#### get_response_listener_data()
+#### `get_url_with_response_listener(tab_url, mimeType, url_include?, watch_new_tabs?, capture_existing_tabs?)`
+
+- 输入：
+
+```json
+{
+  "tab_url": "https://example.com",
+  "mimeType": "application/json",
+  "url_include": "api",
+  "watch_new_tabs": true,
+  "capture_existing_tabs": false
+}
+```
+
+- 成功 `data`：
+
+```json
+{
+  "listening": true,
+  "listener_id": "resp:1740000000000",
+  "tab_url": "https://example.com",
+  "mimeType": "application/json",
+  "url_include": "api",
+  "mode": "single_tab | cross_tab",
+  "watch_new_tabs": true,
+  "capture_existing_tabs": false,
+  "attached_tab_count": 1,
+  "buffer": { "maxlen": 500, "dropped": 0 }
+}
+```
+
+说明：
+
+- 默认会新开一个种子标签页访问 `tab_url` 并监听它
+- `watch_new_tabs=true` 时，服务端会自动附加未来新开的 page 标签页
+- `capture_existing_tabs=true` 时，会把当前浏览器里已经存在的标签页也纳入监听会话
+
+#### `get_response_listener_data()`
+
 - 输入：无
-- 成功 data：`{ "events": [ ... ] }`
+- 成功 `data`：
 
-#### response_listener_stop(clear_data?)
-- 输入：`{ "clear_data"?: false }`
-- 成功 data：`{ "stopped": true, "cleared": false }`
+```json
+{
+  "listener_id": "resp:1740000000000",
+  "active": true,
+  "mode": "cross_tab",
+  "watch_new_tabs": true,
+  "capture_existing_tabs": false,
+  "attached_tab_count": 2,
+  "attached_tabs": [
+    { "tab_id": "A1", "title": "Example Domain", "url": "https://example.com", "source": "seed_tab" },
+    { "tab_id": "A2", "title": "jsonplaceholder...", "url": "https://jsonplaceholder.typicode.com/todos/1", "source": "auto_attached" }
+  ],
+  "events": [
+    {
+      "event_name": "Network.responseReceived",
+      "event_data": {},
+      "tab": { "tab_id": "A2", "url": "https://jsonplaceholder.typicode.com/todos/1", "source": "auto_attached" }
+    }
+  ]
+}
+```
 
-### 2.7 文件：下载/上传/截图
+这里最容易误判，得说透：
 
-#### download_file(url, path, rename)
-- 输入：`{ "url": "...", "path": "...", "rename": "..." }`
-- 成功 data：`{ "path": "...", "mime": "application/octet-stream", "size"?: 123, "raw_result"?: "..." }`
+- `attached_tabs` 用来证明“监听已经挂到哪些标签页上”
+- `events` 用来证明“这些标签页里已经出现了命中过滤条件的响应事件”
+- 这两个阶段不要混为一谈
 
-#### upload_file(file_path, xpath?)
-- 输入：`{ "file_path": "...", "xpath"?: "//input[@type='file']" }`
-- 成功 data：`{ "uploaded": true }`
+推荐验证顺序：
 
-#### get_current_tab_screenshot()
-- 新行为：落盘返回 `{ "path": "...", "mime": "image/jpeg", "size"?: 12345 }`（禁止 bytes）
+1. 先看 `mode`
+2. 再看 `attached_tab_count`
+3. 再看 `attached_tabs[*].source` 是否出现 `auto_attached`
+4. 若仍需验证事件链路，再对该标签页触发一次明确网络动作，例如 reload
+5. 最后再看 `events[*].tab`
 
-#### get_current_tab_screenshot_as_file(path?, name?)
-- 输入：`{ "path"?: ".", "name"?: "screenshot.png" }`
-- 成功 data：`{ "path": "...", "mime": "image/png", "size"?: 123 }`（mime 以实际写入格式为准）
+#### `response_listener_stop(clear_data?)`
 
-### 2.8 Storage
+- 输入：`{ "clear_data": true }`
+- 成功 `data`：
 
-#### save_dict_to_sqlite(data, db_path?, table_name?)
-- 输入：`{ "data": <object|string>, "db_path"?: "data.db", "table_name"?: "my_table" }`
-- 成功 data：`{ "db_path": "...", "table_name": "..." }`
-- 备注：vNext 默认不 DROP 表（append），仅在显式 overwrite 时覆盖（避免破坏性默认行为）。
+```json
+{
+  "stopped": true,
+  "cleared": true,
+  "had_active_listener": true,
+  "previous_mode": "cross_tab"
+}
+```
 
-## 3. 迁移说明（旧返回 -> 新返回）
+### Files / Storage
 
-### 3.1 通用迁移
+#### `download_file(url, path, rename)`
 
-- 旧：tool 可能直接返回 `dict` / `str` / `bytes`。
-- 新：统一返回 envelope：
-  - 成功：`resp.ok == true`，原返回放入 `resp.data`。
-  - 失败：`resp.ok == false`，错误信息在 `resp.error`。
+- 输入：
 
-### 3.2 示例：get_body_text
+```json
+{
+  "url": "https://example.com/file.zip",
+  "path": "D:/downloads",
+  "rename": "file.zip"
+}
+```
+
+- 成功 `data`：
+
+```json
+{
+  "path": "D:/downloads/file.zip",
+  "mime": "application/octet-stream",
+  "size": 12345
+}
+```
+
+#### `upload_file(file_path, xpath?)`
+
+- 输入：
+
+```json
+{
+  "file_path": "D:/tmp/demo.txt",
+  "xpath": "//input[@type='file']"
+}
+```
+
+- 成功 `data`：
+
+```json
+{ "uploaded": true }
+```
+
+#### `get_current_tab_screenshot()`
+
+- 输入：无
+- 成功 `data`：
+
+```json
+{
+  "path": "D:/.../screenshot.jpg",
+  "mime": "image/jpeg",
+  "size": 12345
+}
+```
+
+#### `get_current_tab_screenshot_as_file(path?, name?)`
+
+- 输入：
+
+```json
+{
+  "path": ".",
+  "name": "screenshot.png"
+}
+```
+
+- 成功 `data`：
+
+```json
+{
+  "path": "D:/.../screenshot.png",
+  "mime": "image/png",
+  "size": 12345
+}
+```
+
+#### `save_dict_to_sqlite(data, db_path?, table_name?, mode?)`
+
+- 输入：
+
+```json
+{
+  "data": { "a": 1 },
+  "db_path": "data.db",
+  "table_name": "records",
+  "mode": "append"
+}
+```
+
+- 成功 `data`：
+
+```json
+{
+  "db_path": "data.db",
+  "table_name": "records"
+}
+```
+
+说明：
+
+- 默认 `mode = append`
+- 如需覆盖写入，显式传 `mode = overwrite`
+
+## 迁移说明
+
+如果你的调用方还停留在老版本心智里，这里给你一句人话总结：
+
+- 旧版常见返回：裸 `dict`、裸 `str`、甚至 `bytes`
+- 当前版本统一返回 envelope
+- 截图与下载类结果不再直接回传二进制，而是返回落盘路径
+
+示例：
 
 旧：
+
 ```json
 { "body_text": "..." }
 ```
 
 新：
+
 ```json
 { "ok": true, "data": { "body_text": "..." } }
 ```
 
-### 3.3 示例：get_current_tab_screenshot
+旧：
 
-旧：`<bytes>`
+```text
+<bytes>
+```
 
 新：
+
 ```json
-{ "ok": true, "data": { "path": "D:/.../screenshot.jpg", "mime": "image/jpeg", "size": 12345 } }
+{
+  "ok": true,
+  "data": {
+    "path": "D:/.../screenshot.jpg",
+    "mime": "image/jpeg",
+    "size": 12345
+  }
+}
 ```

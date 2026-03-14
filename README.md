@@ -1,68 +1,161 @@
-# DrissionPage MCP Server -- 骚神出品
+# DrissionPageMCP
+![](https://img.shields.io/badge/python-3.9-brightgreen)
+![](https://img.shields.io/github/watchers/wxhzhwxhzh/DrissionPageMCP?style=social)
+![](https://img.shields.io/github/stars/wxhzhwxhzh/DrissionPageMCP?style=social)
+![](https://img.shields.io/github/forks/wxhzhwxhzh/DrissionPageMCP?style=social)
 
-基于DrissionPage和FastMCP的浏览器自动化MCP服务器，提供丰富的浏览器操作API供AI调用。
+基于 `DrissionPage` 和 `FastMCP` 的浏览器自动化 MCP Server。
 
-## 重要变更（vNext）
+这仓库现在的定位很明确：通过 MCP 暴露一组稳定、可 JSON 序列化、便于大模型调用的浏览器自动化工具，覆盖页面导航、DOM 读取、点击输入、截图落盘、CDP 调试、响应监听，以及跨标签页网络监听这类稍微有点技术含量的场景。
 
-本项目已开始重构以提高 MCP 客户端兼容性和可维护性（tool 名称保持不变，但返回结构已升级）。
-
-- 返回结构统一为 envelope：`{ ok, data/error }`（breaking change，需要更新你的提示词/调用方）。
-- 截图/下载等涉及二进制的结果：统一“落盘返回 `{path, mime, size?}`”，禁止直接返回 bytes。
-- DOM/Elements：禁止返回 DOM Element 等不可 JSON 序列化对象；输入元素信息改为返回 outerHTML 列表。
-
-完整对外契约见：`docs/mcp-contract.md`。
-
-## 项目简介
 ![logo](img/DrissionPageMCP-logo.png)
 
-DrissionPage MCP  是一个基于 DrissionPage 和 FastMCP 的浏览器自动化MCP server服务器，它提供了一系列强大的浏览器操作 API，让您能够轻松通过AI实现网页自动化操作。
+## 当前状态
 
-### 主要特性
+当前仓库和最早的原始版本已经不是一回事了，几个关键点先说透，免得一上来就踩坑：
 
-- 支持浏览器的打开、关闭和连接管理
-- 提供丰富的页面元素操作方法
-- 支持 JavaScript 代码执行
-- 支持 CDP 协议操作
-- 提供便捷的文件下载功能
-- 支持键盘按键模拟
-- 支持页面截图功能
-- 增加 网页后台监听数据包的功能
-- 增加自动上传下载文件功能
+- 所有 tool 统一返回 envelope：`{ ok, data/error }`
+- 截图、下载等二进制结果统一落盘，返回 `path + mime + size`
+- 不再返回不可 JSON 序列化的 DOM 对象
+- 已支持跨标签页响应监听，能自动附加未来新开的标签页
+- 已支持 `drag(..., human_like=true, seed=7)` 这种更自然的拖拽轨迹模式
 
-#### Python要求
-- Python >= 3.10
-- pip（最新版本）
-- uv （最新版本）
+完整对外契约见 [docs/mcp-contract.md](docs/mcp-contract.md)。
 
+## 能力概览
 
-#### 浏览器要求
-- Chrome 浏览器（推荐 90 及以上版本）
+### 浏览器与标签页
 
+- 连接或接管已有 Chrome 调试实例
+- 在当前标签页打开 URL
+- 新建标签页并导航
+- 获取当前标签页信息
 
-#### 必需的Python包
-- drissionpage >= 4.1.0.18
-- fastmcp >= 2.4.0
-- uv
+### 页面读取与交互
 
-## 安装说明
-- 把本仓库 `git clone` 到本地，核心启动文件是 `main.py`。
-- 执行 `uv sync` 安装运行依赖。
-- 如需运行测试，执行 `uv sync --extra dev` 安装开发依赖。
-- 首先要进行 [💖 MCP 安装环境准备工作](./docs/guides/MCP安装教程.md)。
+- 获取简化版 DOM 树
+- 获取输入控件信息
+- 提取页面正文
+- XPath 点击
+- 按文本点击
+- XPath 输入
+- 键盘按键发送
+- 鼠标悬停与拖拽
 
-### 安装到Cursor编辑器
+### 调试与监听
 
-![安装说明](img/install_to_Cursor1.png)
-![安装说明](img/install_to_cursor2.png)
+- 执行 JavaScript
+- 执行 CDP 命令
+- 监听 CDP 事件
+- 监听响应数据包
+- 跨标签页自动附加响应监听
 
-### 安装到vscode编辑器
+### 文件与持久化
 
-![安装说明](img/install_to_vscode0.png)
-![安装说明](img/install_to_vscode1.png)
-![安装说明](img/install_to_vscode2.png)
+- 上传文件
+- 下载文件
+- 当前页面截图
+- 结果写入 SQLite
 
+## Tool 清单
 
-请将以下配置代码粘贴到编辑器的 `mcpServers` 设置中（请填写你自己电脑上 `main.py` 文件的绝对路径）：
+当前 `server.py` 实际注册的 tool 如下：
+
+### Meta
+
+- `get_version`
+- `get_DrissionPage_code_guide`
+
+### Browser / Tab
+
+- `connect_or_open_browser`
+- `new_tab`
+- `wait`
+- `get`
+- `get_current_tab_info`
+
+### DOM / Text
+
+- `getInputElementsInfo`
+- `getSimplifiedDomTree`
+- `get_body_text`
+
+### Input / Interaction
+
+- `send_enter`
+- `click_by_xpath`
+- `click_by_containing_text`
+- `input_by_xapth`
+- `send_key`
+- `move_to`
+- `drag`
+
+### JS / CDP / Network
+
+- `run_js`
+- `run_cdp`
+- `listen_cdp_event`
+- `get_cdp_event_data`
+- `get_url_with_response_listener`
+- `response_listener_stop`
+- `get_response_listener_data`
+
+### Files / Storage
+
+- `download_file`
+- `upload_file`
+- `get_current_tab_screenshot`
+- `get_current_tab_screenshot_as_file`
+- `save_dict_to_sqlite`
+
+## 环境要求
+
+### Python
+
+- `Python >= 3.10`
+- 推荐使用 `uv`
+
+### 浏览器
+
+- Chrome
+- 需要能通过远程调试端口接管
+
+### 依赖
+
+核心依赖见 [pyproject.toml](pyproject.toml)：
+
+- `drissionpage >= 4.1.0.18`
+- `fastmcp >= 2.4.0`
+
+开发测试依赖：
+
+- `pytest >= 7.0.0`
+
+## 安装
+
+```bash
+uv sync
+```
+
+如果要跑测试：
+
+```bash
+uv sync --extra dev
+```
+
+## 启动
+
+项目入口是 [main.py](main.py)，实际会转发到 [server.py](server.py) 中的 MCP server。
+
+直接启动：
+
+```bash
+uv run python main.py
+```
+
+## MCP 配置示例
+
+把下面配置放进编辑器的 `mcpServers` 设置里，并把路径改成你本机仓库路径：
 
 ```json
 {
@@ -70,88 +163,208 @@ DrissionPage MCP  是一个基于 DrissionPage 和 FastMCP 的浏览器自动化
     "DrissionPageMCP": {
       "type": "stdio",
       "command": "uv",
-      "args": ["--directory", "D:\\test10\\DrissionPageMCP", "run", "main.py"]
+      "args": ["--directory", "D:\\mcp\\DrissionPageMCP", "run", "main.py"]
     }
   }
 }
 ```
-注意事项：
-- 请根据实际路径修改 `args` 中的路径
-- Windows 中路径中的反斜杠需要转义（使用 `\\`）
-- 确保 `uv` 命令在系统 PATH 中可用
-- [《MCP安装参考教程》](https://docs.trae.ai/ide/model-context-protocol)
 
-## 推荐调用流程（强烈建议按顺序）
+注意：
 
-1. `connect_or_open_browser`（连接/启动浏览器）
-2. `get` 或 `new_tab`（打开页面）
-3. `getSimplifiedDomTree`（拿到可用的 DOM 结构，便于生成 xpath）
-4. `click_by_xpath` / `input_by_xapth` / `send_key`（执行交互）
-5. `get_body_text` / `get_current_tab_info` / 截图（验证结果）
+- Windows 路径里的反斜杠要写成 `\\`
+- `uv` 需要在系统 `PATH` 中可用
+- 这套配置走的是 stdio transport，不要在 server 启动阶段乱 `print`
 
-## 端到端示例（2 个）
+安装相关参考：
 
-示例 1：打开页面并点击（返回统一 envelope）
+- [docs/guides/MCP安装教程.md](docs/guides/MCP安装教程.md)
+
+## 推荐调用顺序
+
+别上来就点点点，浏览器自动化最怕的就是不看上下文乱抡工具。推荐顺序：
+
+1. `connect_or_open_browser`
+2. `get` 或 `new_tab`
+3. `getSimplifiedDomTree`
+4. `click_by_xpath` / `input_by_xapth` / `send_key`
+5. `get_body_text` / `get_current_tab_info` / 截图
+6. 如果启用了监听，最后执行 `response_listener_stop`
+
+## 返回结构
+
+所有 tool 统一返回：
+
+成功：
+
+```json
+{ "ok": true, "data": {} }
+```
+
+失败：
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "NOT_CONNECTED",
+    "message": "browser not connected",
+    "detail": {}
+  }
+}
+```
+
+这不是矫情，这是为了让调用方别再被 `bytes`、不可序列化对象和乱七八糟的半结构化返回狠狠干翻。
+
+## 快速示例
+
+### 1. 打开页面并读取正文
+
 ```text
-connect_or_open_browser({\"debug_port\":9222})
-get({\"url\":\"https://example.com\"})
+connect_or_open_browser({"address":"127.0.0.1:9223"})
+get({"url":"https://example.com"})
 getSimplifiedDomTree()
-click_by_xpath({\"xpath\":\"//a[contains(.,'More information')]\"})
 get_body_text()
 ```
 
-示例 2：截图（返回落盘 path + mime，禁止 bytes）
+### 2. 截图
+
 ```text
-connect_or_open_browser({\"debug_port\":9222})
-get({\"url\":\"https://example.com\"})
+connect_or_open_browser({"address":"127.0.0.1:9223"})
+get({"url":"https://example.com"})
 get_current_tab_screenshot()
 ```
 
-截图返回示例（大致结构）：
+截图返回大致形态：
+
 ```json
-{ \"ok\": true, \"data\": { \"path\": \"D:/.../dp_artifacts/screenshots/screenshot_....jpg\", \"mime\": \"image/jpeg\", \"size\": 12345 } }
+{
+  "ok": true,
+  "data": {
+    "path": "D:/.../dp_artifacts/screenshots/screenshot_xxx.jpg",
+    "mime": "image/jpeg",
+    "size": 12345
+  }
+}
 ```
 
-## 工具说明补充
+### 3. Human-like Drag
 
-- `upload_file` 支持可选参数 `xpath`（默认 `//input[@type='file']`），用于指定触发上传的 input 元素。
-- `save_dict_to_sqlite` 默认不再 DROP TABLE（append 模式）；需要覆盖写入时显式传 `mode=\"overwrite\"`。
-- `connect_or_open_browser` 现支持 `address`（如 `127.0.0.1:9222`）与 `debug_port` 两种连接方式，且不会再用默认 `9222` 覆盖你传入的 `config.debug_port`。
-- `get_current_tab_info` 会返回 `browser_address` 与 `active_connection`，用于排查“连接到 A 浏览器但操作落在 B 浏览器”的串线问题。
+当目标站点对直线拖拽比较敏感时，可以启用更自然的轨迹模式：
+
+```text
+connect_or_open_browser({"address":"127.0.0.1:9223"})
+getSimplifiedDomTree()
+drag({
+  "xpath":"//div[contains(@class,'slider')]",
+  "offset_x":180,
+  "offset_y":0,
+  "duration":900,
+  "human_like":true,
+  "seed":7
+})
+```
+
+返回里会带上 `mode` 和 `trajectory` 摘要，用于区分这次到底是普通线性拖拽，还是人类轨迹模式。
+
+### 4. 跨标签页响应监听
+
+这是当前仓库里最容易被误用、也最值得单独讲清楚的一块。
+
+默认情况下，`get_url_with_response_listener()` 会新开一个种子标签页并监听它。若页面后续还会打开新标签页，需要显式开启：
+
+```text
+connect_or_open_browser({"address":"127.0.0.1:9223"})
+get_url_with_response_listener({
+  "tab_url":"https://example.com",
+  "mimeType":"application/json",
+  "url_include":"jsonplaceholder.typicode.com/todos/1?from_window_open=3",
+  "watch_new_tabs":true,
+  "capture_existing_tabs":false
+})
+```
+
+### 跨标签页监听的正确验证顺序
+
+别只盯着 `events`。正确顺序是：
+
+1. 先确认返回里 `mode == "cross_tab"`
+2. 触发真实的新标签页动作，比如：
+
+```text
+run_js({
+  "js_code":"window.open('https://jsonplaceholder.typicode.com/todos/1?from_window_open=3', '_blank'); return 'opened';"
+})
+```
+
+3. 调用 `get_response_listener_data()`，先看：
+   - `attached_tab_count` 是否从 `1` 增长到 `2` 以上
+   - `attached_tabs[*].source` 是否出现 `auto_attached`
+4. 如果新页已经挂上了，但 `events` 还是空的，先别急着下结论。这通常表示“新页已挂载，但还没发生符合过滤条件的网络动作”
+5. 对 auto-attached 的目标页再触发一次明确网络动作，比如重载同一 URL
+6. 再次读取 `get_response_listener_data()`，此时再看 `events[*].tab`
+
+### 已实测通过的一条最小链路
+
+- 种子页：`https://example.com`
+- 新页动作：`window.open('https://jsonplaceholder.typicode.com/todos/1?from_window_open=3', '_blank')`
+- 第一次验证：`attached_tab_count = 2`，且新页 `source = auto_attached`
+- 第二次验证：对 JSON 新页重载一次后，`events[*].tab.url` 命中该新页 URL
 
 ## 常见问题
 
-- 如果你发现返回值无法被客户端解析：优先确认你是否已按 `docs/mcp-contract.md` 的新返回结构处理（envelope + JSON 可序列化）。
-- 如果调用 tool 报 NOT_CONNECTED：先 `connect_or_open_browser`，或确认浏览器调试端口（默认 9222）是否可用。
+### `NOT_CONNECTED`
 
-## 本地测试（推荐）
+先调用 `connect_or_open_browser`，或者确认浏览器调试端口可用。
 
-在 `DrissionPageMCP/` 目录下：
+### 返回值客户端解析不了
+
+优先确认调用方是否已经按 envelope 结构处理，而不是还拿老版本的裸 `dict` / `bytes` 心智在那儿硬套。
+
+### 开了跨标签页监听，但没抓到新页响应
+
+先查三件事：
+
+1. 是否传了 `watch_new_tabs=true`
+2. `attached_tab_count` 有没有增长
+3. `attached_tabs[*].source` 有没有出现 `auto_attached`
+
+如果 `auto_attached` 已经出现，但 `events` 为空，先判断是不是“已挂载但尚未发生命中过滤条件的网络动作”，别把这两件事混成一个结论。
+
+## 本地开发与测试
+
+运行测试：
 
 ```bash
-uv sync --extra dev
 uv run python -m pytest -q
 ```
 
-## 调试命令
+只做语法级检查：
 
-调试
-```
-npx -y @modelcontextprotocol/inspector uv run D:\\test10\\DrissionPageMCP\\main.py
-```
-或者
-```
-mcp dev  D:\\test10\\DrissionPageMCP\\main.py
+```bash
+python -m py_compile core.py server.py tools\\network.py
 ```
 
-## 更新日志
-### v0.1.3
-增加 自动上传下载文件功能
-### v0.1.2
-增加 网页后台监听数据包的功能
+## 调试
 
-### v0.1.0
+### MCP Inspector
 
-- 初始版本发布
-- 实现基本的浏览器控制功能
-- 提供元素操作 API
+```bash
+npx -y @modelcontextprotocol/inspector uv run D:\\mcp\\DrissionPageMCP\\main.py
+```
+
+### MCP Dev
+
+```bash
+mcp dev D:\\mcp\\DrissionPageMCP\\main.py
+```
+
+## 相关文档
+
+- [docs/mcp-contract.md](docs/mcp-contract.md)
+- [docs/guides/MCP安装教程.md](docs/guides/MCP安装教程.md)
+- [docs/guides/DrissionPage使用教程.md](docs/guides/DrissionPage使用教程.md)
+- [docs/guides/DrissionPage_code_guide.md](docs/guides/DrissionPage_code_guide.md)
+
+## 仓库说明
+
+如果你是从原仓库 README 的历史描述一路看过来的，最好把旧心智扔一扔。当前这份 README 以 `server.py` 实际注册的 tools、`docs/mcp-contract.md` 当前契约、以及已经做过的真实跨标签页监听验证为准。老描述要是和这里冲突，按这里来，别跟过期文档谈恋爱。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
@@ -20,9 +21,16 @@ class BrowserManager:
     dp: DrissionPageMCP
     default_config: dict
 
+    @staticmethod
+    def _auto_reconnect_enabled() -> bool:
+        value = os.getenv("DRISSIONPAGE_MCP_AUTO_RECONNECT", "false").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
     async def ensure_browser(self) -> Tuple[bool, Optional[str]]:
         if self.dp.browser is not None:
             return True, None
+        if not self._auto_reconnect_enabled():
+            return False, "browser not connected; call connect_or_open_browser explicitly"
         try:
             await self.dp.connect_or_open_browser(config=self.default_config)
             return True, None

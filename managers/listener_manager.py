@@ -43,19 +43,36 @@ class ListenerManager:
             "events": self.dp.get_cdp_event_data(),
         }
 
-    def start_response_listener(self, tab_url: str, mimeType: str, url_include: str) -> str:
+    def start_response_listener(
+        self,
+        tab_url: str,
+        mimeType: str,
+        url_include: str,
+        watch_new_tabs: bool = False,
+        capture_existing_tabs: bool = False,
+    ) -> str:
         # We keep a single active response listener in vNext (stdio single-session).
         listener_id = f"resp:{int(time.time() * 1000)}"
         self.current_response_listener_id = listener_id
-        result = self.dp.get_url_with_response_listener(tab_url=tab_url, mimeType=mimeType, url_include=url_include)
+        result = self.dp.get_url_with_response_listener(
+            tab_url=tab_url,
+            mimeType=mimeType,
+            url_include=url_include,
+            watch_new_tabs=watch_new_tabs,
+            capture_existing_tabs=capture_existing_tabs,
+        )
         if not isinstance(result, dict) or result.get("listening") is not True:
             raise RuntimeError(f"failed to start response listener for: {tab_url}")
         return listener_id
 
     def get_response_snapshot(self) -> Dict[str, Any]:
-        return {
-            "listener_id": self.current_response_listener_id,
-            "maxlen": getattr(self.dp.response_listener_data, "maxlen", None),
-            "dropped": getattr(self.dp, "response_listener_dropped", 0),
-            "events": self.dp.get_response_listener_data(),
-        }
+        snapshot = self.dp.get_response_listener_data()
+        if not isinstance(snapshot, dict):
+            snapshot = {
+                "maxlen": getattr(self.dp.response_listener_data, "maxlen", None),
+                "dropped": getattr(self.dp, "response_listener_dropped", 0),
+                "events": snapshot,
+            }
+        snapshot = dict(snapshot)
+        snapshot["listener_id"] = self.current_response_listener_id
+        return snapshot

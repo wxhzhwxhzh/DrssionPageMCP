@@ -1,15 +1,18 @@
 #！/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from typing import Any,Literal
+from typing import Any, Literal
 import re
 from collections import deque
 from pathlib import Path
+import time
 from DrissionPage import Chromium,ChromiumOptions
 from mcp.server.fastmcp import FastMCP,Image,Context
 
 from DrissionPage.items import SessionElement, ChromiumElement, ShadowRoot, NoneElement, ChromiumTab, MixTab, ChromiumFrame
 from DrissionPage.common import Keys
+
+from utils.human_mouse import HumanMouseTrajectory
 
 
 提示='''
@@ -36,6 +39,230 @@ class DrissionPageMCP():
         self.response_listener_data = deque(maxlen=self._listener_maxlen)
         self.response_listener_dropped = 0
         self._last_connect_config: dict[str, Any] = {}
+        self._response_listener_state = self._new_response_listener_state()
+        self._response_listener_tabs: dict[str, dict[str, Any]] = {}
+        self._response_auto_attach_callback = None
+
+    @staticmethod
+    def _safe_attr(obj: Any, name: str, default: Any = None) -> Any:
+        try:
+            return getattr(obj, name)
+        except Exception:
+            return default
+
+    def _new_response_listener_state(self) -> dict[str, Any]:
+        return {
+            "active": False,
+            "mode": "single_tab",
+            "tab_url": None,
+            "mimeType": None,
+            "url_include": ".",
+            "watch_new_tabs": False,
+            "capture_existing_tabs": False,
+            "source_tab_id": None,
+            "source_tab_url": None,
+            "auto_attach_enabled": False,
+            "started_at": None,
+            "last_event_at": None,
+        }
+
+    def _reset_response_listener_runtime(self, clear_data: bool = False) -> None:
+        self._response_listener_state = self._new_response_listener_state()
+        self._response_listener_tabs.clear()
+        self._response_auto_attach_callback = None
+        if clear_data:
+            self.response_listener_data.clear()
+            self.response_listener_dropped = 0
+
+    def _make_tab_key(self, tab: Any, target_id: str | None = None) -> str:
+        return str(target_id or self._safe_attr(tab, "tab_id") or id(tab))
+
+    def _tab_meta(self, tab: Any, source: str, target_id: str | None = None, target_type: str | None = None) -> dict[str, Any]:
+        return {
+            "tab_id": self._safe_attr(tab, "tab_id"),
+            "target_id": target_id or self._safe_attr(tab, "tab_id"),
+            "target_type": target_type or "page",
+            "title": self._safe_attr(tab, "title", ""),
+            "url": self._safe_attr(tab, "url", ""),
+            "source": source,
+        }
+
+    def _iter_browser_tabs(self) -> list[Any]:
+        if not self.browser:
+            return []
+
+        get_tabs = getattr(self.browser, "get_tabs", None)
+        if callable(get_tabs):
+            try:
+                tabs = get_tabs()
+                if tabs:
+                    return list(tabs)
+            except Exception:
+                pass
+
+        tabs_attr = getattr(self.browser, "tabs", None)
+        if callable(tabs_attr):
+            try:
+                tabs = tabs_attr()
+                if tabs:
+                    return list(tabs)
+            except Exception:
+                pass
+        elif isinstance(tabs_attr, (list, tuple, set)):
+            return list(tabs_attr)
+
+        latest_tab = self._safe_attr(self.browser, "latest_tab")
+        return [latest_tab] if latest_tab is not None else []
+
+    def _append_response_event(self, *, tab: Any, event: dict[str, Any], source: str, target_id: str | None = None, target_type: str | None = None) -> None:
+        if not self._response_listener_state.get("active"):
+            return
+
+        response = event.get("response", {})
+        response_url = response.get("url", "")
+        response_mime_type = response.get("mimeType", "")
+        expected_mime_type = self._response_listener_state.get("mimeType") or ""
+        url_include = self._response_listener_state.get("url_include") or "."
+
+        if expected_mime_type and expected_mime_type not in response_mime_type:
+            return
+        if url_include not in response_url:
+            return
+
+        if len(self.response_listener_data) == self.response_listener_data.maxlen:
+            self.response_listener_dropped += 1
+
+        self.response_listener_data.append(
+            {
+                "event_name": "Network.responseReceived",
+                "event_data": event,
+                "tab": self._tab_meta(tab, source=source, target_id=target_id, target_type=target_type),
+            }
+        )
+        self._response_listener_state["last_event_at"] = time.time()
+
+    def _attach_response_listener_to_tab(
+        self,
+        tab: Any,
+        *,
+        source: str,
+        target_id: str | None = None,
+        target_type: str | None = None,
+    ) -> dict[str, Any]:
+        tab_key = self._make_tab_key(tab, target_id=target_id)
+        if tab_key in self._response_listener_tabs:
+            return dict(self._response_listener_tabs[tab_key]["meta"])
+
+        tab.run_cdp("Network.enable")
+
+        def _on_response_received(**event):
+            self._append_response_event(
+                tab=tab,
+                event=event,
+                source=source,
+                target_id=target_id,
+                target_type=target_type,
+            )
+
+        tab.driver.set_callback("Network.responseReceived", _on_response_received)
+        meta = self._tab_meta(tab, source=source, target_id=target_id, target_type=target_type)
+        self._response_listener_tabs[tab_key] = {"tab": tab, "callback": _on_response_received, "meta": meta}
+        return dict(meta)
+
+    def _update_response_listener_tab_meta(
+        self,
+        tab: Any,
+        *,
+        source: str | None = None,
+        target_id: str | None = None,
+        target_type: str | None = None,
+    ) -> dict[str, Any] | None:
+        tab_key = self._make_tab_key(tab, target_id=target_id)
+        item = self._response_listener_tabs.get(tab_key)
+        if not item:
+            return None
+        meta = self._tab_meta(
+            tab,
+            source=source or item["meta"].get("source", "unknown"),
+            target_id=target_id or item["meta"].get("target_id"),
+            target_type=target_type or item["meta"].get("target_type"),
+        )
+        item["meta"] = meta
+        return dict(meta)
+
+    def _send_target_session_cdp(self, method: str, session_id: str, **params: Any) -> Any:
+        payload = {"method": method, "sessionId": session_id, **params}
+        return self.browser._driver._send(payload)
+
+    def _handle_response_target_attached(self, **kwargs: Any) -> None:
+        if not self._response_listener_state.get("active") or not self._response_listener_state.get("watch_new_tabs"):
+            return
+
+        info = kwargs.get("targetInfo", {})
+        session_id = kwargs.get("sessionId")
+        target_id = info.get("targetId")
+        target_type = info.get("type") or "page"
+
+        if target_type != "page" or not session_id or not target_id:
+            return
+
+        try:
+            # 先放行暂停中的 target，再取 tab 对象，避免在 paused target 上死等。
+            self._send_target_session_cdp("Runtime.runIfWaitingForDebugger", session_id)
+            tab = self.browser.get_tab(target_id)
+            self._attach_response_listener_to_tab(
+                tab,
+                source="auto_attached",
+                target_id=target_id,
+                target_type=target_type,
+            )
+        except Exception:
+            raise
+
+    def _set_response_auto_attach(self, enabled: bool) -> None:
+        if not self.browser:
+            raise RuntimeError("browser not connected")
+
+        self.browser._driver.run(
+            "Target.setAutoAttach",
+            autoAttach=enabled,
+            waitForDebuggerOnStart=enabled,
+            flatten=True,
+        )
+
+        if enabled:
+            def _on_attached(**kwargs: Any):
+                self._handle_response_target_attached(**kwargs)
+
+            self._response_auto_attach_callback = _on_attached
+            self.browser._driver.set_callback("Target.attachedToTarget", _on_attached)
+        else:
+            self.browser._driver.set_callback("Target.attachedToTarget", lambda **_: None)
+            self._response_auto_attach_callback = None
+
+        self._response_listener_state["auto_attach_enabled"] = enabled
+
+    def get_response_listener_snapshot(self) -> dict[str, Any]:
+        state = dict(self._response_listener_state)
+        return {
+            "active": state["active"],
+            "mode": state["mode"],
+            "tab_url": state["tab_url"],
+            "mimeType": state["mimeType"],
+            "url_include": state["url_include"],
+            "watch_new_tabs": state["watch_new_tabs"],
+            "capture_existing_tabs": state["capture_existing_tabs"],
+            "source_tab_id": state["source_tab_id"],
+            "source_tab_url": state["source_tab_url"],
+            "auto_attach_enabled": state["auto_attach_enabled"],
+            "started_at": state["started_at"],
+            "last_event_at": state["last_event_at"],
+            "attached_tabs": [dict(item["meta"]) for item in self._response_listener_tabs.values()],
+            "attached_tab_count": len(self._response_listener_tabs),
+            "maxlen": getattr(self.response_listener_data, "maxlen", None),
+            "dropped": self.response_listener_dropped,
+            "events": list(self.response_listener_data),
+        }
 
     def test(self):
         return "test"
@@ -72,6 +299,7 @@ class DrissionPageMCP():
 
         self.browser = Chromium(co)
         self._last_connect_config = dict(config)
+        self._reset_response_listener_runtime(clear_data=True)
         tab = self.browser.latest_tab        
 
         if address:
@@ -359,56 +587,93 @@ tab = browser.new_tab('{url}')
             "video/webm",
             "video/ogg"
         ],
-        url_include: str = "."        
+        url_include: str = ".",
+        watch_new_tabs: bool = False,
+        capture_existing_tabs: bool = False,
     ) :
         '''
-        开启一个新的标签页，设置监听，访问tab_url,
-        tab_url: 被监听的标签页的url
-        mimeType: 需要监听的接收的数据包的mimeType类型
-        url_include: 需要监听的接收的数据包的url包含的关键字
-        refresh: 是否刷新页面,
+        开启一个新的标签页，设置监听并访问 tab_url。
+        当 watch_new_tabs=True 时，会自动附加未来新开的 page 标签页，
+        将匹配条件的响应统一写入共享缓冲区。
         '''
+        self.response_listener_stop(clear_data=True)
+        self._response_listener_state.update(
+            {
+                "active": True,
+                "mode": "cross_tab" if (watch_new_tabs or capture_existing_tabs) else "single_tab",
+                "tab_url": tab_url,
+                "mimeType": mimeType,
+                "url_include": url_include,
+                "watch_new_tabs": watch_new_tabs,
+                "capture_existing_tabs": capture_existing_tabs,
+                "started_at": time.time(),
+                "last_event_at": None,
+            }
+        )
+
+        # 先建种子页，再打开 auto-attach，避免把我们自己的种子 tab 也挂成暂停态。
         t = self.browser.new_tab("about:blank")
+        source_meta = self._attach_response_listener_to_tab(t, source="seed_tab")
+        self._response_listener_state["source_tab_id"] = source_meta.get("tab_id")
+        self._response_listener_state["source_tab_url"] = tab_url
 
-        t.run_cdp("Network.enable")
+        if capture_existing_tabs:
+            for existing_tab in self._iter_browser_tabs():
+                self._attach_response_listener_to_tab(existing_tab, source="existing_tab")
 
-        def r(**event):
-            _url = event.get("response", {}).get("url", "")
-            _mimeType = event.get("response", {}).get("mimeType", "")
-            
-            if mimeType in _mimeType and url_include in _url:
-                if len(self.response_listener_data) == self.response_listener_data.maxlen:
-                    self.response_listener_dropped += 1
-                self.response_listener_data.append({
-                    "event_name": "Network.responseReceived",
-                    "event_data": event
-                })
-        
-        t.driver.set_callback("Network.responseReceived", r)
+        if watch_new_tabs:
+            self._set_response_auto_attach(True)
+
         t.get(tab_url)
-        
+        self._update_response_listener_tab_meta(t, source="seed_tab")
+
         return {
             "listening": True,
             "tab_url": tab_url,
             "mimeType": mimeType,
             "url_include": url_include,
+            "mode": self._response_listener_state["mode"],
+            "watch_new_tabs": watch_new_tabs,
+            "capture_existing_tabs": capture_existing_tabs,
+            "attached_tab_count": len(self._response_listener_tabs),
         }
     
 
     
     def response_listener_stop(self,clear_data:bool=False) -> dict:
         """关闭监听网页发送的数据包"""
-        t=self.browser.latest_tab
-        t.run_cdp("Network.disable")
-        if clear_data:
-            self.response_listener_data.clear()
-            self.response_listener_dropped = 0
-        return {"stopped": True, "cleared": clear_data}
+        had_active_listener = self._response_listener_state.get("active", False)
+        previous_mode = self._response_listener_state.get("mode")
+
+        if self._response_listener_state.get("auto_attach_enabled"):
+            try:
+                self._set_response_auto_attach(False)
+            except Exception:
+                pass
+
+        for item in list(self._response_listener_tabs.values()):
+            tab = item.get("tab")
+            try:
+                tab.run_cdp("Network.disable")
+            except Exception:
+                pass
+            try:
+                tab.driver.set_callback("Network.responseReceived", lambda **_: None)
+            except Exception:
+                pass
+
+        self._reset_response_listener_runtime(clear_data=clear_data)
+        return {
+            "stopped": True,
+            "cleared": clear_data,
+            "had_active_listener": had_active_listener,
+            "previous_mode": previous_mode,
+        }
 
     
-    def get_response_listener_data(self) -> list:
+    def get_response_listener_data(self) -> dict[str, Any]:
         """获取监听到的数据,返回数据列表"""
-        return list(self.response_listener_data)
+        return self.get_response_listener_snapshot()
 
     def get_current_tab_screenshot(self) -> bytes:
         """
@@ -494,7 +759,15 @@ tab = browser.new_tab('{url}')
             return result
         else:
             raise LookupError(f"元素{locator}不存在，需要getSimplifiedDomTree先获取元素信息")
-    def drag(self,xpath:str, offset_x: int, offset_y: int, duration: int = 1000) -> dict:
+    def drag(
+        self,
+        xpath: str,
+        offset_x: int,
+        offset_y: int,
+        duration: int = 1000,
+        human_like: bool = False,
+        seed: int | None = None,
+    ) -> dict:
     
         """
         将元素拖动到指定偏移位置
@@ -504,18 +777,54 @@ tab = browser.new_tab('{url}')
             offset_x: x轴偏移量(像素)
             offset_y: y轴偏移量(像素)
             duration: 拖动持续时间(毫秒)，默认为1000
+            human_like: 是否启用人类轨迹模拟
+            seed: 轨迹随机种子，便于复现
         
         Returns:
-            dict: 包含偏移量和持续时间的字典，格式为{"offset_x": int, "offset_y": int, "duration": int}
-            或 str: 当元素不存在时返回错误信息
+            dict: 包含拖拽模式、偏移量和持续时间的字典
         
         Raises:
             无显式抛出异常，但内部可能因元素不存在而返回错误信息
         """
         tab = self.browser.latest_tab
         if e:=tab.ele(f'xpath:{xpath}', timeout=3):
-            tab.actions.move_to(e).wait(0.5).hold().move(offset_x, offset_y).release()
-            result = {"offset_x": offset_x, "offset_y": offset_y, "duration": duration}
+            actions = tab.actions
+            duration_seconds = max(0.001, duration / 1000)
+            actions.move_to(e).wait(0.15)
+
+            if human_like:
+                start = e.rect.viewport_midpoint
+                end = (start[0] + offset_x, start[1] + offset_y)
+                generator = HumanMouseTrajectory()
+                points = generator.generate(
+                    start,
+                    end,
+                    seed=seed,
+                    duration=duration_seconds,
+                )
+                actions.hold()
+                steps = generator.replay_on_actions(
+                    actions,
+                    points,
+                    move_to_start=False,
+                    hold_before_move=False,
+                    release_after_move=True,
+                )
+                result = {
+                    "mode": "human_like",
+                    "offset_x": offset_x,
+                    "offset_y": offset_y,
+                    "requested_duration": duration,
+                    "trajectory": generator.build_report(points, steps, seed=seed),
+                }
+            else:
+                actions.hold().move(offset_x, offset_y, duration=duration_seconds).release()
+                result = {
+                    "mode": "linear",
+                    "offset_x": offset_x,
+                    "offset_y": offset_y,
+                    "requested_duration": duration,
+                }
             return result
         else:
             raise LookupError(f"元素{xpath}不存在，需要getSimplifiedDomTree先获取元素信息")

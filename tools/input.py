@@ -74,11 +74,38 @@ async def move_to(xpath: str):
         return _map_input_error(e, "move_to failed", {"xpath": xpath})
 
 
-async def drag(xpath: str, offset_x: int, offset_y: int, duration: int = 1000):
+async def drag(
+    xpath: str,
+    offset_x: int,
+    offset_y: int,
+    duration: int = 1000,
+    human_like: bool = False,
+    seed: int | None = None,
+):
     ok_, err_ = await get_browser_manager().ensure_browser()
     if not ok_:
         return err("NOT_CONNECTED", "browser not connected", {"exception": err_})
     try:
-        return ok(get_dp().drag(xpath=xpath, offset_x=offset_x, offset_y=offset_y, duration=duration))
+        return ok(
+            get_dp().drag(
+                xpath=xpath,
+                offset_x=offset_x,
+                offset_y=offset_y,
+                duration=duration,
+                human_like=human_like,
+                seed=seed,
+            )
+        )
     except Exception as e:
-        return _map_input_error(e, "drag failed", {"xpath": xpath})
+        return _map_input_error(
+            e,
+            "drag failed",
+            {
+                "xpath": xpath,
+                "offset_x": offset_x,
+                "offset_y": offset_y,
+                "duration": duration,
+                "human_like": human_like,
+                "seed": seed,
+            },
+        )

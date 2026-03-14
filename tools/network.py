@@ -68,12 +68,24 @@ def get_cdp_event_data():
         return err("INTERNAL_ERROR", "get_cdp_event_data failed", {"exception": str(e)})
 
 
-async def get_url_with_response_listener(tab_url: str, mimeType: str, url_include: str = "."):
+async def get_url_with_response_listener(
+    tab_url: str,
+    mimeType: str,
+    url_include: str = ".",
+    watch_new_tabs: bool = False,
+    capture_existing_tabs: bool = False,
+):
     ok_, err_ = await get_browser_manager().ensure_browser()
     if not ok_:
         return err("NOT_CONNECTED", "browser not connected", {"exception": err_})
     try:
-        listener_id = get_listener_manager().start_response_listener(tab_url=tab_url, mimeType=mimeType, url_include=url_include)
+        listener_id = get_listener_manager().start_response_listener(
+            tab_url=tab_url,
+            mimeType=mimeType,
+            url_include=url_include,
+            watch_new_tabs=watch_new_tabs,
+            capture_existing_tabs=capture_existing_tabs,
+        )
         snap = get_listener_manager().get_response_snapshot()
         return ok(
             {
@@ -82,11 +94,24 @@ async def get_url_with_response_listener(tab_url: str, mimeType: str, url_includ
                 "tab_url": tab_url,
                 "mimeType": mimeType,
                 "url_include": url_include,
+                "mode": snap.get("mode"),
+                "watch_new_tabs": watch_new_tabs,
+                "capture_existing_tabs": capture_existing_tabs,
+                "attached_tab_count": snap.get("attached_tab_count"),
                 "buffer": {"maxlen": snap.get("maxlen"), "dropped": snap.get("dropped")},
             }
         )
     except Exception as e:
-        return err("INTERNAL_ERROR", "get_url_with_response_listener failed", {"exception": str(e)})
+        return err(
+            "INTERNAL_ERROR",
+            "get_url_with_response_listener failed",
+            {
+                "exception": str(e),
+                "tab_url": tab_url,
+                "watch_new_tabs": watch_new_tabs,
+                "capture_existing_tabs": capture_existing_tabs,
+            },
+        )
 
 
 async def response_listener_stop(clear_data: bool = False):
